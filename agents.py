@@ -1,6 +1,6 @@
 """
 Agentes especializados do sistema multi-agente
-ATUALIZADO: Inclui agente de classificação de categoria
+ATUALIZADO: Inclui agente de classificaÃ§Ã£o de categoria
 """
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
@@ -12,11 +12,12 @@ from prompts.prompt_rag import rag_instructions
 from prompts.prompt_ticket import tickect_instructions
 from prompts.prompt_suport import suport_instructions
 from prompts.prompt_category_classifier import category_classifier_instructions
+from prompts.prompt_reservation import reservation_instructions
 
 
 def create_rag_agent() -> Agent:
     """
-    Agente especializado em buscar informações na base de conhecimento
+    Agente especializado em buscar informaÃ§Ãµes na base de conhecimento
     """
     return Agent(
         name="knowledge_base_agent",
@@ -26,15 +27,15 @@ def create_rag_agent() -> Agent:
             max_tokens=Config.MAX_TOKENS
         ),
         instruction=rag_instructions,
-        description="Busca soluções técnicas na base de conhecimento",
+        description="Busca soluÃ§Ãµes tÃ©cnicas na base de conhecimento",
         tools=[search_knowledge_base]
     )
 
 
 def create_category_classifier_agent() -> Agent:
     """
-    Agente especializado em classificar e encontrar o código de categoria adequado
-    NOVO: Usa RAG na collection "codigo" para encontrar o código correto
+    Agente especializado em classificar e encontrar o cÃ³digo de categoria adequado
+    NOVO: Usa RAG na collection "codigo" para encontrar o cÃ³digo correto
     """
     return Agent(
         name="category_classifier_agent",
@@ -44,7 +45,7 @@ def create_category_classifier_agent() -> Agent:
             max_tokens=Config.MAX_TOKENS
         ),
         instruction=category_classifier_instructions,
-        description="Classifica o problema e encontra o código de categoria mais adequado",
+        description="Classifica o problema e encontra o cÃ³digo de categoria mais adequado",
         tools=[search_category_code]
     )
 
@@ -61,14 +62,14 @@ def create_ticket_creation_agent() -> Agent:
             max_tokens=Config.MAX_TOKENS
         ),
         instruction=tickect_instructions,
-        description="Cria novos tickets de suporte técnico",
+        description="Cria novos tickets de suporte tÃ©cnico",
         tools=[create_ticket]
     )
 
 
 def create_support_agent() -> Agent:
     """
-    Agente de suporte técnico que tenta resolver problemas diretamente
+    Agente de suporte tÃ©cnico que tenta resolver problemas diretamente
     """
     return Agent(
         name="tech_support_agent",
@@ -78,5 +79,22 @@ def create_support_agent() -> Agent:
             max_tokens=Config.MAX_TOKENS
         ),
         instruction=suport_instructions,
-        description="Fornece suporte técnico direto ao usuário"
+        description="Fornece suporte tÃ©cnico direto ao usuÃ¡rio"
+    )
+
+
+def create_reservation_agent() -> Agent:
+    """
+    Agente especializado em gerenciar reservas de salas
+    """
+    return Agent(
+        name="reservation_agent",
+        model=LiteLlm(
+            model=Config.BEDROCK_CLAUDE_MODEL,
+            temperature=Config.TEMPERATURE,
+            max_tokens=Config.MAX_TOKENS
+        ),
+        instruction=reservation_instructions,
+        description="Gerencia solicitações de reservas de salas",
+        tools=[create_ticket]
     )

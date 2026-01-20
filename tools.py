@@ -1,7 +1,7 @@
 """
 Tools para gerenciamento de tickets via API PÚBLICA
 USA JSONPlaceholder (https://jsonplaceholder.typicode.com/) como POC
-ATUALIZADO: Suporta criação de tickets com status (open/closed) e resolution
+ATUALIZADO: Integrado com session_manager para reset de contexto
 """
 import requests
 import json
@@ -18,26 +18,36 @@ litellm.suppress_debug_info = True
 litellm.drop_params = True
 
 
+# 🔥 NOVO: Variável global para armazenar user_id atual
+_current_user_id = None
+
+
+def set_current_user_id(user_id: str):
+    """Define o user_id atual para a thread"""
+    global _current_user_id
+    _current_user_id = user_id
+    agent_logger.info(f"🔧 user_id definido no contexto: {user_id}")
+
+
+def _get_user_id_from_context() -> Optional[str]:
+    """Obtém user_id do contexto atual"""
+    global _current_user_id
+    if _current_user_id:
+        agent_logger.info(f"✅ user_id obtido do contexto: {_current_user_id}")
+    else:
+        agent_logger.warning("⚠️ user_id não encontrado no contexto - usando default")
+        _current_user_id = "user_default"
+    return _current_user_id
+
+
 class TicketAPIClient:
-    """
-    Cliente para API de Tickets usando JSONPlaceholder
+    """Cliente para API de Tickets usando JSONPlaceholder"""
     
-    POC: Usa API pública gratuita - https://jsonplaceholder.typicode.com
-    - Não requer autenticação
-    - Aceita POST/PUT/DELETE (mas não persiste dados)
-    - Retorna responses realistas
-    
-    Em produção: Substituir por API real do seu sistema de tickets
-    """
-    
-    # API pública gratuita para testes
     BASE_URL = "https://jsonplaceholder.typicode.com"
     
     def __init__(self):
         agent_logger.info("🌐 Cliente de API de Tickets Inicializado")
         agent_logger.info(f"   Base URL: {self.BASE_URL}")
-        
-        # Cache local para simular persistência (já que JSONPlaceholder não persiste)
         self.local_cache = {}
     
     def create_ticket(
@@ -48,35 +58,20 @@ class TicketAPIClient:
         status: str = "open",
         resolution: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Cria um ticket via API REST com status configurável
+        """Cria um ticket via API REST com status configurável"""
+        agent_logger.info("📄 Fazendo requisição HTTP para criar ticket...")
         
-        Endpoint: POST /posts
-        (JSONPlaceholder usa /posts como endpoint genérico de recursos)
-        
-        Args:
-            user_name: Nome do usuário
-            issue_description: Descrição do problema
-            priority: Prioridade (low, medium, high, critical)
-            status: Status do ticket ("open" ou "closed")
-            resolution: Notas de resolução (obrigatório se status="closed")
-        """
-        agent_logger.info("🔄 Fazendo requisição HTTP para criar ticket...")
-        
-        # Gerar ID único para rastreamento local
         local_ticket_id = f"TKT-{str(uuid.uuid4())[:8].upper()}"
         
-        # Payload da requisição
         payload = {
             "title": f"Suporte Técnico - {user_name}",
             "body": issue_description,
             "userId": 1,
             "priority": priority,
             "status": status,
-            "localId": local_ticket_id  # ID local para rastreamento
+            "localId": local_ticket_id
         }
         
-        # Se o ticket já está sendo criado como fechado, adicionar resolution
         if status == "closed":
             if not resolution:
                 resolution = "Problema resolvido pelo agente de suporte"
@@ -87,7 +82,6 @@ class TicketAPIClient:
         agent_logger.debug(f"   📦 Payload: {json.dumps(payload, indent=2)}")
         
         try:
-            # Fazer requisição POST
             response = requests.post(
                 f"{self.BASE_URL}/posts",
                 json=payload,
@@ -97,15 +91,12 @@ class TicketAPIClient:
             
             agent_logger.info(f"   📥 Status Code: {response.status_code}")
             
-            # Verificar resposta
             if response.status_code in [200, 201]:
                 data = response.json()
                 agent_logger.info(f"   ✅ Resposta recebida: ID={data.get('id')}")
                 
-                # API retorna um ID numérico, vamos usar nosso ID personalizado
                 remote_id = data.get("id")
                 
-                # Armazenar em cache local (já que JSONPlaceholder não persiste)
                 ticket = {
                     "id": local_ticket_id,
                     "remote_id": remote_id,
@@ -117,7 +108,6 @@ class TicketAPIClient:
                     "api_response": data
                 }
                 
-                # Adicionar resolution se fornecida
                 if resolution:
                     ticket["resolution_notes"] = resolution
                     ticket["closed_at"] = datetime.now().isoformat()
@@ -126,13 +116,12 @@ class TicketAPIClient:
                 
                 agent_logger.info(f"   💾 Ticket armazenado em cache local")
                 
-                # Log destacado baseado no status
                 if status == "closed":
                     agent_logger.info("\n   " + "─"*50)
                     agent_logger.info(f"   ✅ TICKET CRIADO JÁ FECHADO")
                     agent_logger.info(f"   🎫 ID: {local_ticket_id}")
                     agent_logger.info(f"   👤 Usuário: {user_name}")
-                    agent_logger.info(f"   👤 Description: {issue_description}")
+                    agent_logger.info(f"   📋 Description: {issue_description}")
                     agent_logger.info(f"   ⚡ Prioridade: {priority}")
                     agent_logger.info(f"   📝 Resolução: {resolution[:50]}..." if resolution and len(resolution) > 50 else f"   📝 Resolução: {resolution}")
                     agent_logger.info("   " + "─"*50 + "\n")
@@ -142,7 +131,7 @@ class TicketAPIClient:
                     agent_logger.info(f"   📋 TICKET CRIADO (ABERTO)")
                     agent_logger.info(f"   🎫 ID: {local_ticket_id}")
                     agent_logger.info(f"   👤 Usuário: {user_name}")
-                    agent_logger.info(f"   👤 Description: {issue_description}")
+                    agent_logger.info(f"   📋 Description: {issue_description}")
                     agent_logger.info(f"   ⚡ Prioridade: {priority}")
                     agent_logger.info(f"   ⏳ Status: ABERTO - Aguardando técnico")
                     agent_logger.info("   " + "─"*50 + "\n")
@@ -168,7 +157,7 @@ class TicketAPIClient:
                 }
                 
         except requests.exceptions.Timeout:
-            agent_logger.error("   ⏱️  Timeout na requisição")
+            agent_logger.error("   ⏱️ Timeout na requisição")
             return {
                 "success": False,
                 "message": "Timeout ao criar ticket na API"
@@ -181,24 +170,17 @@ class TicketAPIClient:
             }
     
     def close_ticket(self, ticket_id: str, resolution_notes: str) -> Dict[str, Any]:
-        """
-        Fecha um ticket via API REST
+        """Fecha um ticket via API REST"""
+        agent_logger.info(f"📄 Fazendo requisição HTTP para fechar ticket {ticket_id}...")
         
-        Endpoint: PUT /posts/{id}
-        """
-        agent_logger.info(f"🔄 Fazendo requisição HTTP para fechar ticket {ticket_id}...")
-        
-        # Buscar ticket no cache local
         ticket = self.local_cache.get(ticket_id)
         
         if not ticket:
-            agent_logger.warning(f"   ⚠️  Ticket {ticket_id} não encontrado no cache local")
-            # Tentar mesmo assim com um ID padrão
+            agent_logger.warning(f"   ⚠️ Ticket {ticket_id} não encontrado no cache local")
             remote_id = 1
         else:
             remote_id = ticket.get("remote_id", 1)
         
-        # Payload da requisição
         payload = {
             "id": remote_id,
             "status": "closed",
@@ -210,7 +192,6 @@ class TicketAPIClient:
         agent_logger.debug(f"   📦 Payload: {json.dumps(payload, indent=2)}")
         
         try:
-            # Fazer requisição PUT
             response = requests.put(
                 f"{self.BASE_URL}/posts/{remote_id}",
                 json=payload,
@@ -220,12 +201,10 @@ class TicketAPIClient:
             
             agent_logger.info(f"   📥 Status Code: {response.status_code}")
             
-            # Verificar resposta
             if response.status_code in [200, 201]:
                 data = response.json()
                 agent_logger.info(f"   ✅ Ticket fechado na API")
                 
-                # Atualizar cache local
                 if ticket:
                     ticket["status"] = "closed"
                     ticket["resolution_notes"] = resolution_notes
@@ -249,7 +228,7 @@ class TicketAPIClient:
                 }
                 
         except requests.exceptions.Timeout:
-            agent_logger.error("   ⏱️  Timeout na requisição")
+            agent_logger.error("   ⏱️ Timeout na requisição")
             return {
                 "success": False,
                 "message": "Timeout ao fechar ticket na API"
@@ -262,18 +241,13 @@ class TicketAPIClient:
             }
     
     def get_ticket_status(self, ticket_id: str) -> Dict[str, Any]:
-        """
-        Consulta o status de um ticket via API REST
+        """Consulta o status de um ticket via API REST"""
+        agent_logger.info(f"📄 Consultando ticket {ticket_id} na API...")
         
-        Endpoint: GET /posts/{id}
-        """
-        agent_logger.info(f"🔄 Consultando ticket {ticket_id} na API...")
-        
-        # Buscar no cache local primeiro
         ticket = self.local_cache.get(ticket_id)
         
         if not ticket:
-            agent_logger.warning(f"   ⚠️  Ticket {ticket_id} não encontrado no cache local")
+            agent_logger.warning(f"   ⚠️ Ticket {ticket_id} não encontrado no cache local")
             return {
                 "success": False,
                 "message": f"Ticket {ticket_id} não encontrado"
@@ -284,7 +258,6 @@ class TicketAPIClient:
         agent_logger.info(f"   📤 GET {self.BASE_URL}/posts/{remote_id}")
         
         try:
-            # Fazer requisição GET
             response = requests.get(
                 f"{self.BASE_URL}/posts/{remote_id}",
                 timeout=10
@@ -337,22 +310,9 @@ def create_ticket(
     """
     Cria um novo ticket de suporte técnico via API REST pública.
     
-    POC - USA API PÚBLICA:
-    ----------------------
-    API: JSONPlaceholder (https://jsonplaceholder.typicode.com)
-    Endpoint: POST /posts
-    Autenticação: Nenhuma (público)
-    
-    NOVA FUNCIONALIDADE:
-    -------------------
-    Agora suporta criação de tickets já com status "closed" para documentar
-    problemas que foram resolvidos pelo agente sem necessidade de técnico.
-    
-    COMO FUNCIONA:
-    1. Faz requisição HTTP POST para a API pública
-    2. API retorna ID do recurso criado
-    3. Armazena resposta em cache local (pois API não persiste)
-    4. Retorna confirmação de sucesso
+    🔥 INTEGRAÇÃO COM SESSION MANAGER:
+    O user_id é obtido automaticamente do contexto da sessão ADK.
+    Após criar ticket, marca sessão como completa automaticamente.
     
     Args:
         user_name: Nome do usuário que reportou o problema
@@ -363,20 +323,19 @@ def create_ticket(
     
     Returns:
         Dicionário com informações do ticket criado
-        
-    Exemplos:
-        # Ticket aberto (precisa de técnico)
-        create_ticket("João", "PC quebrado", "high", status="open")
-        
-        # Ticket já fechado (problema resolvido)
-        create_ticket("Maria", "PC lento", "low", status="closed", 
-                     resolution="Reinicialização resolveu o problema")
     """
+    # Import local para evitar circular dependency
+    from session_manager import mark_attendance_completed
+    
+    # 🔥 NOVO: Tentar obter user_id do contexto da thread/sessão
+    user_id = _get_user_id_from_context()
+    
     agent_logger.tool_call("ticket_api", "create_ticket", {
         "user_name": user_name,
         "priority": priority,
         "status": status,
-        "description": issue_description[:50] + "..."
+        "description": issue_description[:50] + "...",
+        "user_id": user_id
     })
     
     try:
@@ -390,11 +349,27 @@ def create_ticket(
         )
         
         if result["success"]:
-            # Log detalhado e DESTACADO da criação
             ticket_id = result['ticket_id']
             
+            # 🔥 NOVO: MARCAR SESSÃO COMO COMPLETA
+            if user_id:
+                agent_logger.info("\n" + "="*70)
+                agent_logger.info(f"🔄 MARCANDO SESSÃO COMO COMPLETA")
+                agent_logger.info(f"   👤 User ID: {user_id}")
+                agent_logger.info(f"   🎫 Ticket ID: {ticket_id}")
+                
+                mark_attendance_completed(user_id, ticket_id)
+                
+                agent_logger.success(f"✅ SESSÃO COMPLETA - Próxima mensagem = NOVO atendimento")
+                agent_logger.info(f"   📊 Histórico será desconsiderado na próxima interação")
+                agent_logger.info("="*70 + "\n")
+            else:
+                agent_logger.warning("\n⚠️  ATENÇÃO: user_id não fornecido")
+                agent_logger.warning("   Sessão NÃO será marcada como completa")
+                agent_logger.warning("   Histórico NÃO será resetado\n")
+            
+            # Log detalhado da criação
             if status == "closed":
-                # Ticket criado JÁ FECHADO - usar log especial
                 agent_logger.ticket_created_and_closed(
                     ticket_id, 
                     user_name, 
@@ -402,7 +377,6 @@ def create_ticket(
                     resolution if resolution else "Problema resolvido pelo agente"
                 )
             else:
-                # Ticket criado ABERTO
                 agent_logger.ticket_created(ticket_id, user_name, priority)
             
             agent_logger.tool_result("create_ticket", True, f"Ticket {ticket_id} criado via API")
@@ -422,45 +396,33 @@ def create_ticket(
 
 def close_ticket(
     ticket_id: str,
-    resolution_notes: str
+    resolution_notes: str,
+    user_id: Optional[str] = None  # 🔥 NOVO
 ) -> Dict[str, Any]:
     """
     Fecha um ticket de suporte técnico via API REST pública.
     
-    NOTA: Com a nova estratégia, esta função é menos usada pois tickets
-    resolvidos pelo agente são criados já com status="closed".
-    
-    POC - USA API PÚBLICA:
-    ----------------------
-    API: JSONPlaceholder (https://jsonplaceholder.typicode.com)
-    Endpoint: PUT /posts/{id}
-    Autenticação: Nenhuma (público)
-    
-    COMO FUNCIONA:
-    1. Busca ticket no cache local para obter ID remoto
-    2. Faz requisição HTTP PUT para a API pública
-    3. API retorna confirmação de atualização
-    4. Atualiza cache local com novo status
-    5. Retorna confirmação de sucesso
-    
-    Args:
-        ticket_id: ID do ticket a ser fechado
-        resolution_notes: Notas sobre a resolução do problema
-    
-    Returns:
-        Dicionário com informações do fechamento
+    🔥 INTEGRAÇÃO COM SESSION MANAGER:
+    Após fechar ticket, marca sessão como completa.
     """
+    from session_manager import mark_attendance_completed
+    
     agent_logger.tool_call("ticket_api", "close_ticket", {
         "ticket_id": ticket_id,
-        "resolution": resolution_notes[:50] + "..."
+        "resolution": resolution_notes[:50] + "...",
+        "user_id": user_id
     })
     
     try:
-        # Fazer requisição para API real
         result = ticket_api_client.close_ticket(ticket_id, resolution_notes)
         
         if result["success"]:
-            # Log detalhado do fechamento
+            # 🔥 NOVO: Marcar sessão como completa
+            if user_id:
+                agent_logger.info(f"🔄 Marcando sessão como completa para user {user_id}")
+                mark_attendance_completed(user_id, ticket_id)
+                agent_logger.success(f"✅ Sessão marcada - próxima msg = NOVO atendimento")
+            
             agent_logger.ticket_closed(ticket_id, resolution_notes)
             agent_logger.tool_result("close_ticket", True, f"Ticket {ticket_id} fechado via API")
         else:
@@ -478,21 +440,7 @@ def close_ticket(
 
 
 def get_ticket_status(ticket_id: str) -> Dict[str, Any]:
-    """
-    Consulta o status de um ticket via API REST pública.
-    
-    POC - USA API PÚBLICA:
-    ----------------------
-    API: JSONPlaceholder (https://jsonplaceholder.typicode.com)
-    Endpoint: GET /posts/{id}
-    Autenticação: Nenhuma (público)
-    
-    Args:
-        ticket_id: ID do ticket a ser consultado
-    
-    Returns:
-        Dicionário com informações do ticket
-    """
+    """Consulta o status de um ticket via API REST pública."""
     agent_logger.tool_call("ticket_api", "get_ticket_status", {"ticket_id": ticket_id})
     
     try:
@@ -515,9 +463,7 @@ def get_ticket_status(ticket_id: str) -> Dict[str, Any]:
 
 
 def list_all_tickets() -> Dict[str, Any]:
-    """
-    Lista todos os tickets do sistema (cache local)
-    """
+    """Lista todos os tickets do sistema (cache local)"""
     agent_logger.info("📋 Listando todos os tickets do cache local...")
     
     tickets = ticket_api_client.local_cache

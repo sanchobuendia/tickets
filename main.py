@@ -1,7 +1,7 @@
 """
 Sistema de Chatbot Multi-Agente para Suporte Técnico
-Usando Google ADK + Claude no AWS Bedrock
-COM SISTEMA DE LOGGING DETALHADO
+🔥 CORRIGIDO: Usa user_id ao invés de session_id
+🔥 NOVO: Suporta múltiplos problemas na mesma mensagem
 """
 import asyncio
 import os
@@ -23,16 +23,23 @@ os.environ["AWS_SECRET_ACCESS_KEY"] = os.getenv("AWS_SECRET_ACCESS_KEY", "")
 os.environ["AWS_DEFAULT_REGION"] = os.getenv("AWS_REGION", "us-east-1")
 os.environ["AWS_REGION"] = os.getenv("AWS_REGION", "us-east-1")
 
-# Remover AWS_PROFILE para evitar conflitos
 if "AWS_PROFILE" in os.environ:
     del os.environ["AWS_PROFILE"]
 
 
 class TechSupportChatbot:
-    def __init__(self):
-        """Inicializa o chatbot com todos os componentes"""
+    def __init__(self, user_id: str = "user_123"):
+        """
+        Inicializa o chatbot
+        
+        Args:
+            user_id: ID único do usuário (ex: número telefone, email, etc)
+        """
+        self.user_id = user_id  # 🔥 ID do usuário (não session_id)
+        
         agent_logger.separator()
         agent_logger.info("🚀 Inicializando Sistema de Suporte Técnico Multi-Agente...")
+        agent_logger.info(f"   👤 User ID: {user_id}")
         agent_logger.separator()
         
         # Inicializar base de conhecimento
@@ -43,83 +50,111 @@ class TechSupportChatbot:
         agent_logger.info("🔧 Criando agentes especializados...")
         self.orchestrator = create_orchestrator_agent()
         
-        # Serviço de sessão
-        agent_logger.info("🔐 Configurando serviço de sessão...")
+        # Serviço de sessão do ADK
+        agent_logger.info("📝 Configurando serviço de sessão ADK...")
         self.session_service = InMemorySessionService()
-        self.session = None  # Será criada de forma assíncrona
+        self.adk_session = None
         
-        # Runner para executar o agente
-        agent_logger.info("⚙️  Configurando runner de agentes...")
+        # Runner
+        agent_logger.info("⚙️ Configurando runner de agentes...")
         self.runner = Runner(
             app_name=self.orchestrator.name,
             agent=self.orchestrator,
             session_service=self.session_service
         )
         
-        # Estado da conversa
+        # Estado da conversa COM user_id
         agent_logger.info("📊 Inicializando estado da conversa...")
-        self.state = ConversationState()
+        self.state = ConversationState(user_id=self.user_id)
         
         agent_logger.separator()
         agent_logger.info("✅ Sistema iniciado com sucesso!")
         agent_logger.separator()
     
-    async def initialize_session(self):
-        """Inicializa a sessão de forma assíncrona"""
-        if self.session is None:
-            agent_logger.info("🔄 Criando sessão de usuário...")
-            self.session = await self.session_service.create_session(
+    async def initialize_adk_session(self):
+        """Inicializa a sessão do ADK (framework)"""
+        if self.adk_session is None:
+            agent_logger.info("📄 Criando sessão ADK...")
+            self.adk_session = await self.session_service.create_session(
                 app_name=self.orchestrator.name,
-                session_id="tech_support_session",
-                user_id="user_123"
+                session_id=f"adk_session_{self.user_id}",  # Session do ADK != user_id
+                user_id=self.user_id  # 🔥 Mas vinculado ao user_id
             )
-            agent_logger.info(f"✅ Sessão criada: {self.session.id}")
+            agent_logger.info(f"✅ Sessão ADK criada: {self.adk_session.id}")
     
     async def send_message(self, user_message: str) -> str:
         """
-        Envia uma mensagem para o chatbot e retorna a resposta
-        COM LOGGING DETALHADO DO PROCESSO
+        Envia mensagem e retorna resposta
+        🔥 ATUALIZADO: Verifica reset de contexto baseado em user_id
         
         Args:
-            user_message: Mensagem do usuário
+            user_message: Mensagem do usuário (pode conter múltiplos problemas)
             
         Returns:
             Resposta do chatbot
         """
-        # Garantir que a sessão está inicializada
-        await self.initialize_session()
+        await self.initialize_adk_session()
         
-        # Log da mensagem do usuário
+        # 🔥 VERIFICAR SE DEVE RESETAR CONTEXTO (baseado em user_id)
+        if self.state.should_reset_context():
+            agent_logger.warning("\n" + "🔥"*35)
+            agent_logger.warning("🔄 NOVA SESSÃO DETECTADA - RESETANDO CONTEXTO")
+            agent_logger.warning("🔥"*35)
+            agent_logger.warning(f"   👤 User ID: {self.user_id}")
+            agent_logger.warning(f"   🎫 Último(s) ticket(s): {self.state.ticket_id}")
+            agent_logger.warning(f"   📋 Ação: Limpando histórico de problemas anteriores")
+            agent_logger.warning(f"   📨 Mantendo: Apenas mensagem atual")
+            agent_logger.warning("🔥"*35 + "\n")
+            
+            self.state.clear_history_except_current()
+        else:
+            agent_logger.info("📊 Sessão contínua - mantendo contexto completo")
+        
+        # Log da mensagem
         agent_logger.user_message(user_message)
         
         # Adicionar ao histórico
         self.state.add_message("user", user_message)
         
-        # Iniciar processamento
+        # Obter histórico filtrado
+        filtered_history = self.state.get_filtered_history()
+        agent_logger.info(f"\n📊 HISTÓRICO PARA O LLM:")
+        agent_logger.info(f"   Total de mensagens: {len(filtered_history)}")
+        if len(filtered_history) < len(self.state.conversation_history):
+            agent_logger.info(f"   ⚠️  Filtrado de {len(self.state.conversation_history)} para {len(filtered_history)}")
+            agent_logger.info(f"   📌 Problemas anteriores DESCONSIDERADOS\n")
+        else:
+            agent_logger.info(f"   ✅ Contexto completo mantido\n")
+        
+        # Processar
         agent_logger.agent_start("orchestrator", f"Processar: '{user_message[:50]}...'")
         
-        # Criar mensagem como dict ou objeto apropriado
+        # Criar mensagem
         try:
             from google.genai.types import Content, Part
             message_obj = Content(role="user", parts=[Part(text=user_message)])
         except:
             message_obj = {"role": "user", "content": user_message}
         
-        # Executar agente - capturar resposta do generator corretamente
+        # Executar agente
         bot_response = ""
         response_chunks = []
         
-        agent_logger.info("🔄 Executando pipeline de agentes...")
+        agent_logger.info("📄 Executando pipeline de agentes...")
+        agent_logger.info(f"   👤 User ID sendo processado: {self.user_id}")
+        
+        # 🔥 NOVO: Definir user_id no contexto global antes de executar
+        from tools import set_current_user_id
+        set_current_user_id(self.user_id)
         
         try:
             for chunk in self.runner.run(
                 new_message=message_obj,
-                session_id=self.session.id,
-                user_id="user_123"
+                session_id=self.adk_session.id,
+                user_id=self.user_id  # 🔥 PASSA user_id para o runner
             ):
                 response_chunks.append(chunk)
                 
-                # Tentar extrair conteúdo de diferentes formatos
                 if hasattr(chunk, 'content'):
                     content = chunk.content
                     if isinstance(content, str):
@@ -148,7 +183,6 @@ class TechSupportChatbot:
                 elif isinstance(chunk, str):
                     bot_response = chunk
             
-            # Se ainda não temos resposta, tentar converter o último chunk
             if not bot_response and response_chunks:
                 last_chunk = response_chunks[-1]
                 if hasattr(last_chunk, 'parts') and last_chunk.parts:
@@ -164,38 +198,39 @@ class TechSupportChatbot:
             agent_logger.error(f"Erro ao executar agente: {str(e)}")
             bot_response = f"Erro ao processar mensagem: {str(e)}"
         
-        # Finalizar agente
+        # Finalizar
         agent_logger.agent_end("orchestrator", bot_response[:100])
-        
-        # Log da resposta do assistente
         agent_logger.assistant_message(bot_response)
         
-        # Adicionar ao histórico
+        # Adicionar resposta ao histórico
         self.state.add_message("assistant", bot_response)
         
         return bot_response
     
     def get_state(self) -> dict:
-        """Retorna o estado atual da conversa"""
+        """Retorna estado atual"""
         return self.state.get_summary()
     
     async def chat_loop(self):
-        """Loop interativo de chat no terminal"""
+        """Loop interativo de chat"""
         agent_logger.separator()
         print("🎯 CHATBOT DE SUPORTE TÉCNICO")
         agent_logger.separator()
         print("\nBem-vindo ao sistema de suporte técnico!")
         print("Digite sua dúvida ou problema e eu vou te ajudar.")
+        print("\n💡 DICA: Você pode reportar MÚLTIPLOS problemas numa mesma mensagem!")
+        print("   Exemplo: 'PC lento E impressora travada E email não abre'")
+        print("   O sistema vai tratar cada problema separadamente.\n")
         print("\nComandos especiais:")
         print("  - 'sair' ou 'exit': Encerrar o chat")
         print("  - 'tickets': Ver todos os tickets criados")
-        print("  - 'estado': Ver estado da conversa atual\n")
+        print("  - 'estado': Ver estado da conversa atual")
+        print("  - 'reset': Ver se contexto será resetado\n")
         agent_logger.separator()
         
         while True:
             try:
-                # Ler entrada do usuário
-                user_input = input("\n💤 Você: ").strip()
+                user_input = input("\n👤 Você: ").strip()
                 
                 if not user_input:
                     continue
@@ -214,7 +249,7 @@ class TechSupportChatbot:
                     print(f"   🔴 Fechados: {tickets_info['closed']}")
                     
                     if tickets_info['tickets']:
-                        print("\n📝 Detalhes dos tickets:")
+                        print("\n🔍 Detalhes dos tickets:")
                         for ticket_id, ticket in tickets_info['tickets'].items():
                             print(f"\n   🎫 {ticket_id}")
                             print(f"      Status: {ticket['status']}")
@@ -229,14 +264,31 @@ class TechSupportChatbot:
                     agent_logger.separator()
                     state = self.get_state()
                     print("\n📊 Estado da Conversa:")
-                    print(f"   🎫 Ticket ID: {state['ticket_id'] or 'Nenhum'}")
+                    print(f"   👤 User ID: {state['user_id']}")
+                    print(f"   🔄 Estado Sessão: {state['session_state']}")
+                    print(f"   🎫 Ticket ID(s): {state['ticket_id'] or 'Nenhum'}")
                     print(f"   ✅ Resolvido: {'Sim' if state['problem_resolved'] else 'Não'}")
                     print(f"   👤 Usuário: {state['user_name'] or 'Não informado'}")
                     print(f"   💬 Mensagens: {state['messages_count']}")
+                    print(f"   🔄 Reset Necessário: {'SIM' if state['should_reset'] else 'NÃO'}")
                     agent_logger.separator()
                     continue
                 
-                # Enviar mensagem e obter resposta
+                if user_input.lower() == 'reset':
+                    agent_logger.separator()
+                    will_reset = self.state.should_reset_context()
+                    print("\n🔄 Verificação de Reset:")
+                    print(f"   👤 User ID: {self.user_id}")
+                    print(f"   🎫 Último Ticket: {self.state.ticket_id}")
+                    if will_reset:
+                        print(f"   ⚠️  PRÓXIMA MENSAGEM = NOVA SESSÃO")
+                        print(f"   📋 Histórico de problemas anteriores será DESCONSIDERADO")
+                    else:
+                        print(f"   ✅ Sessão contínua - histórico mantido")
+                    agent_logger.separator()
+                    continue
+                
+                # Enviar mensagem
                 print()
                 response = await self.send_message(user_input)
                 print(f"\n🤖 Assistente: {response}")
@@ -256,10 +308,14 @@ class TechSupportChatbot:
 async def main():
     """Função principal"""
     try:
-        # Criar e iniciar chatbot
-        chatbot = TechSupportChatbot()
+        # 🔥 IMPORTANTE: user_id deveria vir de uma fonte real
+        # Ex: número do WhatsApp, email, ID do banco, etc
+        user_id = input("Digite seu ID de usuário (ex: telefone, email): ").strip()
+        if not user_id:
+            user_id = "user_terminal_default"
+            print(f"✅ Usando ID padrão: {user_id}\n")
         
-        # Iniciar loop de chat
+        chatbot = TechSupportChatbot(user_id=user_id)
         await chatbot.chat_loop()
         
     except KeyboardInterrupt:
@@ -272,5 +328,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Executar aplicação
     asyncio.run(main())
