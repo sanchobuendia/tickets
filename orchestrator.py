@@ -1,11 +1,11 @@
 """
 Agente Orquestrador - Coordena o fluxo de trabalho entre os agentes especializados
-ðŸ”¥ ATUALIZADO: Integrado com session_manager para reset de contexto
+ATUALIZADO: Integrado com session_manager para reset de contexto
 """
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 from config import Config
-from agents import (
+from agentes import (
     create_rag_agent,
     create_ticket_creation_agent,
     create_support_agent,
@@ -16,7 +16,7 @@ from logger import agent_logger
 from prompts.prompt_orchestrador import orchestrador_instructions
 from typing import List, Dict
 
-# ðŸ”¥ NOVO: Importar session_manager
+# NOVO: Importar session_manager
 from session_manager import (
     session_manager,
     filter_messages_for_context,
@@ -31,7 +31,7 @@ def create_orchestrator_agent() -> Agent:
     ATUALIZADO: Inclui agente de classificaÃ§Ã£o de categoria
     """
     
-    agent_logger.info("ðŸ—ƒï¸ Criando sistema multi-agente...")
+    agent_logger.info("Criando sistema multi-agente...")
     
     agent_logger.info("   â””â”€ Criando agente de suporte tÃ©cnico...")
     support_agent = create_support_agent()
@@ -45,7 +45,7 @@ def create_orchestrator_agent() -> Agent:
     agent_logger.info("   â””â”€ Criando agente de criaÃ§Ã£o de tickets...")
     ticket_creator = create_ticket_creation_agent()
     
-    agent_logger.info("   └─ Criando agente de reservas de salas...")
+    agent_logger.info("   â””â”€ Criando agente de reservas de salas...")
     reservation_agent = create_reservation_agent()
     
     agent_logger.info("âœ… Todos os agentes criados com sucesso!\n")
@@ -74,10 +74,10 @@ def create_orchestrator_agent() -> Agent:
 class ConversationState:
     """
     MantÃ©m o estado da conversa para tracking
-    ðŸ”¥ ATUALIZADO: Integrado com session_manager
+    ATUALIZADO: Integrado com session_manager
     """
     def __init__(self, user_id: str = "user_123"):
-        self.user_id = user_id  # ðŸ”¥ NOVO: ID do usuÃ¡rio
+        self.user_id = user_id  # NOVO: ID do usuÃ¡rio
         self.ticket_id = None
         self.problem_resolved = False
         self.user_name = None
@@ -87,32 +87,64 @@ class ConversationState:
         self.category_group = None
         self.conversation_history = []
         
-        agent_logger.debug(f"ðŸ“Š Estado da conversa inicializado para user {user_id}")
+        agent_logger.debug(f"â””â”€ Estado da conversa inicializado para user {user_id}")
     
     def add_message(self, role: str, content: str):
-        """Adiciona mensagem ao histÃ³rico"""
-        self.conversation_history.append({
-            "role": role,
-            "content": content
-        })
+        """
+        Adiciona mensagem ao histórico
+        🔥 ATUALIZADO: Adiciona prefixo se for nova sessão
+        """
+        # 🔥 NOVO: Verificar se é nova sessão e adicionar prefixo
+        if role == "user":
+            from session_manager import is_new_session_starting
+            
+            if is_new_session_starting(self.user_id):
+                # Adicionar prefixo INVISÍVEL para o usuário, mas visível para o LLM
+                prefixed_content = f"[NOVA_SESSAO_INICIADA - EXECUTAR_FLUXO_COMPLETO] {content}"
+                
+                agent_logger.warning("\n" + "🔥"*35)
+                agent_logger.warning("🔥 NOVA SESSÃO DETECTADA")
+                agent_logger.warning("🔥"*35)
+                agent_logger.warning(f"   👤 User: {self.user_id}")
+                agent_logger.warning(f"   📋 Mensagem original: {content[:50]}...")
+                agent_logger.warning(f"   🎯 Ação: Adicionando prefixo para forçar fluxo completo")
+                agent_logger.warning("🔥"*35 + "\n")
+                
+                self.conversation_history.append({
+                    "role": role,
+                    "content": prefixed_content
+                })
+            else:
+                self.conversation_history.append({
+                    "role": role,
+                    "content": content
+                })
+        else:
+            self.conversation_history.append({
+                "role": role,
+                "content": content
+            })
         
         # Log da mensagem
         if role == "user":
             agent_logger.user_message(content)
         elif role == "assistant":
             agent_logger.assistant_message(content)
+            agent_logger.user_message(content)
+        elif role == "assistant":
+            agent_logger.assistant_message(content)
     
     def get_filtered_history(self) -> List[Dict]:
         """
-        ðŸ”¥ NOVO: Retorna histÃ³rico filtrado baseado na sessÃ£o
+        NOVO: Retorna histÃ³rico filtrado baseado na sessÃ£o
         
         Se Ãºltima aÃ§Ã£o foi criar ticket, retorna apenas Ãºltima mensagem.
         Caso contrÃ¡rio, retorna histÃ³rico completo.
         """
         if should_clear_context(self.user_id):
-            agent_logger.info("ðŸ”„ FILTRO DE CONTEXTO ATIVADO")
-            agent_logger.info("   âš ï¸  Ãšltima aÃ§Ã£o: ticket criado")
-            agent_logger.info("   ðŸ“Š Retornando apenas mensagem atual (nova sessÃ£o)")
+            agent_logger.info("FILTRO DE CONTEXTO ATIVADO")
+            agent_logger.info("Ãšltima sessÃ£o: ticket criado")
+            agent_logger.info("Retornando apenas mensagem atual (nova sessÃ£o)")
             
             # Retorna apenas Ãºltima mensagem do usuÃ¡rio
             user_messages = [msg for msg in self.conversation_history if msg.get('role') == 'user']
@@ -125,7 +157,7 @@ class ConversationState:
     
     def should_reset_context(self) -> bool:
         """
-        ðŸ”¥ NOVO: Verifica se deve resetar contexto
+        NOVO: Verifica se deve resetar contexto
         
         IMPORTANTE: SÃ³ retorna TRUE se for uma NOVA mensagem apÃ³s ticket criado.
         NÃ£o retorna TRUE no mesmo turno em que o ticket foi criado.
@@ -138,9 +170,9 @@ class ConversationState:
             agent_logger.warning("\n" + "="*70)
             agent_logger.warning("ðŸ”„ RESET DE CONTEXTO NECESSÃRIO")
             agent_logger.warning("="*70)
-            agent_logger.warning(f"   ðŸ‘¤ User: {self.user_id}")
-            agent_logger.warning(f"   ðŸŽ« Ãšltimo ticket: {self.ticket_id}")
-            agent_logger.warning(f"   ðŸ“‹ AÃ§Ã£o: Desconsiderar histÃ³rico anterior")
+            agent_logger.warning(f"User: {self.user_id}")
+            agent_logger.warning(f"Ãšltimo ticket: {self.ticket_id}")
+            agent_logger.warning(f"SessÃ£o: Desconsiderar histÃ³rico anterior")
             agent_logger.warning("="*70 + "\n")
         
         return should_reset
@@ -152,7 +184,7 @@ class ConversationState:
     
     def check_session_state(self) -> str:
         """
-        ðŸ”¥ NOVO: Retorna estado atual da sessÃ£o
+        NOVO: Retorna estado atual da sessÃ£o
         """
         session = session_manager.get_or_create_session(self.user_id)
         return session.state.value
@@ -174,7 +206,7 @@ class ConversationState:
         status = "âœ… RESOLVIDO" if resolved else "â³ EM ANDAMENTO"
         agent_logger.info(f"ðŸ“Œ Status do problema: {status}")
         
-        # ðŸ”¥ NOVO: Atualizar estado da sessÃ£o
+        # NOVO: Atualizar estado da sessÃ£o
         if resolved:
             session_manager.update_session_state(self.user_id, SessionState.WAITING_CONFIRMATION)
     
@@ -184,12 +216,27 @@ class ConversationState:
         agent_logger.info(f"ðŸ‘¤ UsuÃ¡rio identificado: {name}")
     
     def set_issue_description(self, description: str):
-        """Define a descriÃ§Ã£o do problema"""
+        """
+        Define a descricao do problema
+        ATUALIZADO: Gerencia transicao de NEW_SESSION -> DIAGNOSING
+        """
         self.issue_description = description
-        agent_logger.info(f"ðŸ“ Problema registrado: {description[:80]}...")
+        agent_logger.info(f"Problema registrado: {description[:80]}...")
         
-        # ðŸ”¥ NOVO: Iniciar nova sessÃ£o
-        session_manager.start_new_session(self.user_id, description)
+        # NOVO: Gerenciar estado da sessao
+        from session_manager import is_new_session_starting
+        
+        if is_new_session_starting(self.user_id):
+            # Iniciar nova sessao (vai marcar como NEW_SESSION)
+            session_manager.start_new_session(self.user_id, description)
+            
+            # Apos RAG/diagnostico inicial, transicionar para DIAGNOSING
+            session_manager.update_session_state(self.user_id, SessionState.DIAGNOSING)
+            
+            agent_logger.info("   Transicao: NEW_SESSION -> DIAGNOSING")
+        else:
+            # Sessao ja ativa, apenas atualizar
+            session_manager.start_new_session(self.user_id, description)
     
     def set_resolution_notes(self, notes: str):
         """Define as notas de resoluÃ§Ã£o"""
@@ -198,7 +245,7 @@ class ConversationState:
     
     def clear_history_except_current(self):
         """
-        ðŸ”¥ NOVO: Limpa histÃ³rico mantendo apenas a Ãºltima mensagem
+        NOVO: Limpa histÃ³rico mantendo apenas a Ãºltima mensagem
         """
         if self.conversation_history:
             last_message = self.conversation_history[-1]
@@ -214,8 +261,8 @@ class ConversationState:
     def get_summary(self) -> dict:
         """Retorna resumo do estado atual"""
         summary = {
-            "user_id": self.user_id,  # ðŸ”¥ NOVO
-            "session_state": self.check_session_state(),  # ðŸ”¥ NOVO
+            "user_id": self.user_id,  # NOVO
+            "session_state": self.check_session_state(),  # NOVO
             "ticket_id": self.ticket_id,
             "category_code": self.category_code,
             "category_group": self.category_group,
@@ -224,7 +271,7 @@ class ConversationState:
             "issue_description": self.issue_description,
             "resolution_notes": self.resolution_notes,
             "messages_count": len(self.conversation_history),
-            "should_reset": self.should_reset_context()  # ðŸ”¥ NOVO
+            "should_reset": self.should_reset_context()  # NOVO
         }
         
         agent_logger.debug(f"ðŸ“Š Resumo do estado: {summary}")

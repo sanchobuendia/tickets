@@ -18,6 +18,35 @@ class AgentLogger:
         self.name = name
         self.indent_level = 0
         self.setup_logger()
+
+    class PrefixedLogger:
+        """Wrapper simples para prefixar mensagens e reutilizar estilos."""
+
+        def __init__(self, base_logger: "AgentLogger", prefix: str):
+            self.base = base_logger
+            self.prefix = f"[{prefix}]"
+
+        def _p(self, message: str) -> str:
+            return f"{self.prefix} {message}"
+
+        def info(self, message: str):
+            self.base.info(self._p(message))
+
+        def warning(self, message: str):
+            self.base.warning(self._p(message))
+
+        def error(self, message: str):
+            self.base.error(self._p(message))
+
+        def debug(self, message: str):
+            self.base.debug(self._p(message))
+
+        def success(self, message: str):
+            self.base.success(self._p(message))
+
+    def with_prefix(self, prefix: str) -> "AgentLogger.PrefixedLogger":
+        """Cria um logger filho com prefixo padronizado."""
+        return self.PrefixedLogger(self, prefix)
     
     def setup_logger(self):
         """Configura o logger"""

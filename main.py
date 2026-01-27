@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from orchestrator import create_orchestrator_agent, ConversationState
-from rag_system import KnowledgeBaseRAG
+from rag import KnowledgeBaseRAG
 from logger import agent_logger
 from tools import list_all_tickets
 import sys

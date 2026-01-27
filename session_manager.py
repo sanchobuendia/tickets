@@ -1,6 +1,6 @@
 """
-Gerenciador de Sessão de Atendimento
-Controla o ciclo de vida de cada problema técnico e permite reset contextual
+Gerenciador de SessÃ£o de Atendimento
+Controla o ciclo de vida de cada problema tÃ©cnico e permite reset contextual
 """
 
 from typing import Dict, List, Optional
@@ -9,8 +9,9 @@ from enum import Enum
 
 
 class SessionState(Enum):
-    """Estados possíveis de uma sessão de atendimento"""
+    """Estados possÃ­veis de uma sessÃ£o de atendimento"""
     IDLE = "idle"  # Aguardando novo problema
+    NEW_SESSION = "new_session"  # 🔥 NOVO: Primeira mensagem após ticket criado
     DIAGNOSING = "diagnosing"  # Diagnosticando problema
     RESOLVING = "resolving"  # Tentando resolver
     WAITING_CONFIRMATION = "waiting_confirmation"  # Aguardando "resolveu?"
@@ -19,7 +20,7 @@ class SessionState(Enum):
 
 
 class AttendanceSession:
-    """Representa uma sessão de atendimento para um problema específico"""
+    """Representa uma sessÃ£o de atendimento para um problema especÃ­fico"""
     
     def __init__(self, session_id: str):
         self.session_id = session_id
@@ -31,9 +32,19 @@ class AttendanceSession:
         self.completed_at: Optional[datetime] = None
         self.message_count = 0
         
-    def start_new_problem(self, problem: str):
-        """Inicia novo problema"""
-        self.state = SessionState.DIAGNOSING
+    def start_new_problem(self, problem: str, is_new_session: bool = False):
+        """
+        Inicia novo problema
+        
+        Args:
+            problem: Descrição do problema
+            is_new_session: True se é primeiro problema após ticket criado
+        """
+        if is_new_session:
+            self.state = SessionState.NEW_SESSION
+        else:
+            self.state = SessionState.DIAGNOSING
+        
         self.problem_description = problem
         self.message_count = 0
         
@@ -44,11 +55,15 @@ class AttendanceSession:
         self.completed_at = datetime.now()
         
     def is_completed(self) -> bool:
-        """Verifica se sessão está completa"""
+        """Verifica se sessÃ£o estÃ¡ completa"""
         return self.state == SessionState.COMPLETED
     
+    def is_new_session(self) -> bool:
+        """🔥 NOVO: Verifica se é uma nova sessão (primeiro problema após ticket)"""
+        return self.state == SessionState.NEW_SESSION
+    
     def reset(self):
-        """Reseta sessão para novo atendimento"""
+        """Reseta sessÃ£o para novo atendimento"""
         self.state = SessionState.IDLE
         self.problem_description = None
         self.category_code = None
@@ -59,23 +74,23 @@ class AttendanceSession:
 
 class SessionManager:
     """
-    Gerenciador central de sessões
-    Mantém controle de atendimentos por usuário
+    Gerenciador central de sessÃµes
+    MantÃ©m controle de atendimentos por usuÃ¡rio
     """
     
     def __init__(self):
         self.sessions: Dict[str, AttendanceSession] = {}
         
     def get_or_create_session(self, user_id: str) -> AttendanceSession:
-        """Obtém sessão existente ou cria nova"""
+        """ObtÃ©m sessÃ£o existente ou cria nova"""
         if user_id not in self.sessions:
             self.sessions[user_id] = AttendanceSession(user_id)
         return self.sessions[user_id]
     
     def should_reset_context(self, user_id: str) -> bool:
         """
-        Verifica se deve resetar contexto para este usuário
-        Retorna True se último atendimento foi completado
+        Verifica se deve resetar contexto para este usuÃ¡rio
+        Retorna True se Ãºltimo atendimento foi completado
         """
         if user_id not in self.sessions:
             return False
@@ -86,19 +101,19 @@ class SessionManager:
     def get_relevant_messages(self, user_id: str, all_messages: List[Dict]) -> List[Dict]:
         """
         Filtra mensagens relevantes para o atendimento atual
-        Remove mensagens de atendimentos anteriores já finalizados
+        Remove mensagens de atendimentos anteriores jÃ¡ finalizados
         """
         session = self.get_or_create_session(user_id)
         
-        # Se sessão foi completada, retorna apenas a última mensagem (nova solicitação)
+        # Se sessÃ£o foi completada, retorna apenas a Ãºltima mensagem (nova solicitaÃ§Ã£o)
         if session.is_completed():
-            # Pega apenas a última mensagem do usuário
+            # Pega apenas a Ãºltima mensagem do usuÃ¡rio
             user_messages = [msg for msg in all_messages if msg.get('role') == 'user']
             return user_messages[-1:] if user_messages else []
         
-        # Se sessão está ativa, retorna todas as mensagens da sessão atual
+        # Se sessÃ£o estÃ¡ ativa, retorna todas as mensagens da sessÃ£o atual
         if session.created_at:
-            # Filtra mensagens após início da sessão
+            # Filtra mensagens apÃ³s inÃ­cio da sessÃ£o
             return [
                 msg for msg in all_messages 
                 if self._message_is_after_session_start(msg, session.created_at)
@@ -107,52 +122,59 @@ class SessionManager:
         return all_messages
     
     def mark_session_completed(self, user_id: str, ticket_id: str):
-        """Marca sessão como completa após criar ticket"""
+        """Marca sessÃ£o como completa apÃ³s criar ticket"""
         session = self.get_or_create_session(user_id)
         session.mark_completed(ticket_id)
     
     def start_new_session(self, user_id: str, problem: str):
-        """Inicia nova sessão de atendimento"""
+        """
+        Inicia nova sessÃ£o de atendimento
+        🔥 ATUALIZADO: Detecta se é novo atendimento após ticket
+        """
         session = self.get_or_create_session(user_id)
         
-        # Se já tinha sessão completa, reseta
-        if session.is_completed():
+        # 🔥 NOVO: Verificar se é nova sessão (após ticket criado)
+        is_new_session = session.is_completed()
+        
+        # Se jÃ¡ tinha sessÃ£o completa, reseta
+        if is_new_session:
             session.reset()
         
-        session.start_new_problem(problem)
+        # Iniciar com flag de nova sessão se aplicável
+        session.start_new_problem(problem, is_new_session=is_new_session)
     
     def update_session_state(self, user_id: str, new_state: SessionState):
-        """Atualiza estado da sessão"""
+        """Atualiza estado da sessÃ£o"""
         session = self.get_or_create_session(user_id)
         session.state = new_state
     
     def set_category_code(self, user_id: str, code: str):
-        """Armazena código de categoria"""
+        """Armazena cÃ³digo de categoria"""
         session = self.get_or_create_session(user_id)
         session.category_code = code
     
     @staticmethod
     def _message_is_after_session_start(message: Dict, session_start: datetime) -> bool:
-        """Verifica se mensagem é posterior ao início da sessão"""
-        # Assume que mensagens têm timestamp
+        """Verifica se mensagem Ã© posterior ao inÃ­cio da sessÃ£o"""
+        # Assume que mensagens tÃªm timestamp
         msg_timestamp = message.get('timestamp')
         if msg_timestamp:
             if isinstance(msg_timestamp, str):
                 msg_timestamp = datetime.fromisoformat(msg_timestamp)
             return msg_timestamp >= session_start
-        return True  # Se não tem timestamp, considera relevante
+        return True  # Se nÃ£o tem timestamp, considera relevante
 
 
-# Instância singleton para uso global
+# InstÃ¢ncia singleton para uso global
 session_manager = SessionManager()
 
 
 def filter_messages_for_context(user_id: str, messages: List[Dict]) -> List[Dict]:
     """
-    Função helper para filtrar mensagens antes de passar para LLM
+    FunÃ§Ã£o helper para filtrar mensagens antes de passar para LLM
     
     Args:
-        user_id: ID do usuário (número WhatsApp, por exemplo)
+        user_id: ID do usuÃ¡rio (nÃºmero WhatsApp, por exemplo)
         messages: Lista completa de mensagens da conversa
         
     Returns:
@@ -163,11 +185,11 @@ def filter_messages_for_context(user_id: str, messages: List[Dict]) -> List[Dict
 
 def mark_attendance_completed(user_id: str, ticket_id: str):
     """
-    Função helper para marcar atendimento como completo
-    Deve ser chamada APÓS criar o ticket
+    FunÃ§Ã£o helper para marcar atendimento como completo
+    Deve ser chamada APÃ“S criar o ticket
     
     Args:
-        user_id: ID do usuário
+        user_id: ID do usuÃ¡rio
         ticket_id: ID do ticket criado (ex: "TKT-A1B2")
     """
     session_manager.mark_session_completed(user_id, ticket_id)
@@ -175,12 +197,27 @@ def mark_attendance_completed(user_id: str, ticket_id: str):
 
 def should_clear_context(user_id: str) -> bool:
     """
-    Verifica se deve limpar contexto para próxima mensagem
+    Verifica se deve limpar contexto para prÃ³xima mensagem
+    
+    Args:
+        user_id: ID do usuÃ¡rio
+        
+    Returns:
+        True se Ãºltimo atendimento foi completado
+    """
+    return session_manager.should_reset_context(user_id)
+
+
+def is_new_session_starting(user_id: str) -> bool:
+    """
+    🔥 NOVO: Verifica se é o INÍCIO de uma nova sessão
+    (primeira mensagem após ticket criado)
     
     Args:
         user_id: ID do usuário
         
     Returns:
-        True se último atendimento foi completado
+        True se está iniciando nova sessão (deve executar fluxo completo)
     """
-    return session_manager.should_reset_context(user_id)
+    session = session_manager.get_or_create_session(user_id)
+    return session.is_new_session()

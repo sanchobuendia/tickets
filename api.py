@@ -21,13 +21,19 @@ if "AWS_PROFILE" in os.environ:
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import asyncio
 from orchestrator import create_orchestrator_agent, ConversationState
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-from rag_system import KnowledgeBaseRAG
+from rag import KnowledgeBaseRAG
 import uuid
+from logger import agent_logger
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+from config import Config
+
+api_log = agent_logger.with_prefix("API")
 
 app = FastAPI(
     title="Tech Support Chatbot API",
@@ -74,6 +80,11 @@ user_sessions: Dict[str, Dict[str, Any]] = {}
 
 class MessageRequest(BaseModel):
     """Modelo de requisição de mensagem"""
+    userId: str = Field(
+        ..., 
+        description="ID único do usuário (telefone, email, etc)",
+        examples=["5531999887766", "user@empresa.com", "user_123"]
+    )
     message: str = Field(
         ..., 
         description="Mensagem do usuário (pode conter múltiplos problemas)",
@@ -82,22 +93,72 @@ class MessageRequest(BaseModel):
             "PC lento E impressora travada E email não abre"
         ]
     )
-    user_id: str = Field(  # 🔥 MUDOU: session_id → user_id
-        ..., 
-        description="ID único do usuário (telefone, email, etc)",
-        examples=["5531999887766", "user@empresa.com", "user_123"]
+    attachments: List[str] = Field(
+        default_factory=list,
+        description="Lista de caminhos no S3 para anexos",
+        examples=[["path-1", "path-2"]]
     )
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "userId": "789",
+                "message": "mensagem para a IA",
+                "attachments": ["s3://meu-bucket/path-1", "s3://meu-bucket/path-2"]
+            }
+        }
+
+
+class TicketResponse(BaseModel):
+    pending: bool
+    title: str
+    description: str
+    groupCode: str
+    categoryCode: str
+    attachments: List[str] = Field(default_factory=list)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "pending": False,
+                "title": "Issue with login",
+                "description": "User cannot log in to the system.",
+                "groupCode": "456",
+                "categoryCode": "123",
+                "attachments": ["path-1", "path-2"],
+            }
+        }
 
 
 class MessageResponse(BaseModel):
     """Modelo de resposta de mensagem"""
-    response: str = Field(..., description="Resposta do chatbot")
-    user_id: str = Field(..., description="ID do usuário")  # 🔥 MUDOU
-    tickets_created: int = Field(  # 🔥 NOVO: quantos tickets foram criados
-        default=0,
-        description="Número de tickets criados nesta interação"
-    )
-    state: Dict[str, Any] = Field(..., description="Estado da conversa")
+    userId: str = Field(..., description="ID do usuário")
+    message: str = Field(..., description="Resposta do chatbot")
+    tickets: List[TicketResponse] = Field(default_factory=list)
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "userId": "789",
+                "message": "mensagem para o user",
+                "tickets": [
+                    {
+                        "pending": False,
+                        "title": "Issue with login",
+                        "description": "User cannot log in to the system.",
+                        "groupCode": "456",
+                        "categoryCode": "123",
+                        "attachments": ["path-1", "path-2"]
+                    },
+                    {
+                        "pending": True,
+                        "title": "Issue with login",
+                        "description": "User cannot log in to the system.",
+                        "groupCode": "456",
+                        "categoryCode": "123",
+                        "attachments": []
+                    }
+                ]
+            }
+        }
 
 
 async def get_or_create_user_session(user_id: str) -> tuple:
@@ -154,13 +215,13 @@ async def get_or_create_user_session(user_id: str) -> tuple:
 @app.on_event("startup")
 async def startup_event():
     """Inicializa o sistema"""
-    print("🚀 Iniciando API do Chatbot de Suporte Técnico...")
+    api_log.info("Iniciando API do Chatbot de Suporte Técnico")
     
     # Inicializar base de conhecimento
     rag = KnowledgeBaseRAG()
-    print("✅ Base de conhecimento carregada")
+    api_log.success("Base de conhecimento carregada")
     
-    print("✅ API pronta para receber requisições!")
+    api_log.success("API pronta para receber requisições")
 
 
 @app.get("/")
@@ -232,7 +293,12 @@ async def delete_user_session(user_id: str):
     }
 
 
-@app.post("/chat", response_model=MessageResponse)
+@app.post(
+    "/chat",
+    response_model=MessageResponse,
+    summary="Enviar mensagem ao assistente",
+    description="Recebe uma mensagem do usuário, processa (suporte ou reserva) e retorna a resposta e tickets criados."
+)
 async def chat(request: MessageRequest):
     """
     Enviar mensagem para o chatbot
@@ -243,11 +309,27 @@ async def chat(request: MessageRequest):
     - Cria um ticket para cada problema
     - Reseta contexto após processar todos os problemas
     
-    Exemplo de mensagem com múltiplos problemas:
+    
+    Exemplo de mensagens:
     ```json
     {
+      "message": "Quero reservar a sala 202 do segundo andar do prédio de Física. Para o dia 12/02/2026, das 14h às 16h. Para a apresentação de um TCC",
+      "user_id": "21012026-t001"
+    }
+
+    {
+      "message": "Meu computador está lento",
+      "user_id": "21012026-t002"
+    }
+
+    {
+      "message": "Minha CPU pegou fogo e náo liga. Cheirando a queimado e já retirei da tomada",
+      "user_id": "21012026-t003"
+    }
+
+    {
       "message": "PC lento E impressora travada E email não abre",
-      "user_id": "5531999887766"
+      "user_id": "21012026-t003"
     }
     ```
     
@@ -257,100 +339,166 @@ async def chat(request: MessageRequest):
     - Contexto resetado após processar todos
     """
     try:
-        # Obter ou criar sessão do usuário
-        user_id, runner, state, is_new = await get_or_create_user_session(request.user_id)
-        
-        # 🔥 VERIFICAR SE DEVE RESETAR CONTEXTO
-        if state.should_reset_context():
-            print(f"🔄 RESET de contexto para usuário {user_id}")
-            state.clear_history_except_current()
-        
-        # Adicionar mensagem ao histórico
-        state.add_message("user", request.message)
-        
-        # Obter sessão do ADK
-        adk_session = user_sessions[user_id]["adk_session"]
-        
-        # Criar mensagem
-        try:
-            from google.genai.types import Content, Part
-            message_obj = Content(role="user", parts=[Part(text=request.message)])
-        except:
-            message_obj = {"role": "user", "content": request.message}
-        
-        # 🔥 IMPORTANTE: Contar tickets antes
-        from tools import ticket_api_client, set_current_user_id
-        
-        # 🔥 NOVO: Definir user_id no contexto antes de executar
-        set_current_user_id(user_id)
-        
-        tickets_before = len(ticket_api_client.local_cache)
-        
-        # Executar agente
-        bot_response = ""
-        response_chunks = []
-        
-        for chunk in runner.run(
-            new_message=message_obj,
-            session_id=adk_session.id,
-            user_id=user_id  # 🔥 PASSA user_id para o runner
-        ):
-            response_chunks.append(chunk)
-            
-            if hasattr(chunk, 'content'):
-                content = chunk.content
-                if isinstance(content, str):
-                    bot_response = content
-                elif hasattr(content, 'parts') and content.parts:
-                    first_part = content.parts[0]
-                    if hasattr(first_part, 'text'):
-                        bot_response = first_part.text
-                    else:
-                        bot_response = str(first_part)
-                else:
-                    bot_response = str(content)
-            elif hasattr(chunk, 'parts'):
-                if chunk.parts:
-                    first_part = chunk.parts[0]
-                    if hasattr(first_part, 'text'):
-                        bot_response = first_part.text
-                    else:
-                        bot_response = str(first_part)
-            elif hasattr(chunk, 'text'):
-                bot_response = chunk.text
-            elif hasattr(chunk, 'message'):
-                bot_response = chunk.message
-            elif isinstance(chunk, dict):
-                bot_response = chunk.get("content") or chunk.get("text") or chunk.get("message") or chunk.get("response", "")
-            elif isinstance(chunk, str):
-                bot_response = chunk
-        
-        if not bot_response and response_chunks:
-            last_chunk = response_chunks[-1]
-            if hasattr(last_chunk, 'parts') and last_chunk.parts:
-                first_part = last_chunk.parts[0]
-                if hasattr(first_part, 'text'):
-                    bot_response = first_part.text
-        
-        if not bot_response:
-            bot_response = "Desculpe, não consegui processar sua mensagem."
-        
-        # Adicionar resposta ao histórico
-        state.add_message("assistant", bot_response)
-        
-        # 🔥 CONTAR quantos tickets foram criados
-        tickets_after = len(ticket_api_client.local_cache)
-        tickets_created = tickets_after - tickets_before
-        
-        return {
-            "response": bot_response,
-            "user_id": user_id,
-            "tickets_created": tickets_created,  # 🔥 NOVO
-            "state": state.get_summary()
-        }
-        
+        return await _process_chat(request)
     except Exception as e:
+        # Se for erro de tool_use sem tool_result, resetar sessão e tentar uma vez
+        err_msg = str(e)
+        if "tool_use" in err_msg and "tool_result" in err_msg:
+            api_log.warning("Erro de tool_use/tool_result detectado; resetando sessão e tentando novamente")
+            user_sessions.pop(request.user_id, None)
+            try:
+                return await _process_chat(request, is_retry=True)
+            except Exception as e2:
+                api_log.error(f"Falha após retry: {e2}")
+                raise HTTPException(status_code=500, detail=str(e2))
+        api_log.error(f"Erro no endpoint /chat: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _process_chat(request: MessageRequest, is_retry: bool = False):
+    """Processa a mensagem via ADK; permite retry controlado."""
+    user_id, runner, state, is_new = await get_or_create_user_session(request.userId)
+    api_log.info(f"Mensagem recebida | user_id={user_id} | nova_sessao={is_new} | retry={is_retry}")
+    api_log.debug(f"Payload: {request.message}")
+    
+    if state.should_reset_context():
+        api_log.warning(f"RESET de contexto para usuário {user_id}")
+        state.clear_history_except_current()
+    
+    full_message = request.message
+    attachment_texts = _load_attachments(request.attachments)
+    if attachment_texts:
+        full_message = f"{request.message}\n\n[ANEXOS]\n" + "\n".join(attachment_texts)
+        api_log.info(f"Anexos carregados e adicionados ao contexto ({len(attachment_texts)})")
+
+    state.add_message("user", full_message)
+    adk_session = user_sessions[user_id]["adk_session"]
+    
+    try:
+        from google.genai.types import Content, Part
+        message_obj = Content(role="user", parts=[Part(text=full_message)])
+    except Exception:
+        message_obj = {"role": "user", "content": full_message}
+    
+    from tools import ticket_api_client, set_current_user_id
+    set_current_user_id(user_id)
+    tickets_before = len(ticket_api_client.local_cache)
+    tickets_before_ids = set(ticket_api_client.local_cache.keys())
+    
+    bot_response = ""
+    response_chunks = []
+    
+    for chunk in runner.run(
+        new_message=message_obj,
+        session_id=adk_session.id,
+        user_id=user_id
+    ):
+        response_chunks.append(chunk)
+        api_log.debug(f"Chunk recebido: {type(chunk)}")
+        
+        if hasattr(chunk, "content"):
+            content = chunk.content
+            if isinstance(content, str):
+                bot_response = content
+            elif hasattr(content, "parts") and content.parts:
+                first_part = content.parts[0]
+                if hasattr(first_part, "text"):
+                    bot_response = first_part.text
+                else:
+                    bot_response = str(first_part)
+            else:
+                bot_response = str(content)
+        elif hasattr(chunk, "parts"):
+            if chunk.parts:
+                first_part = chunk.parts[0]
+                if hasattr(first_part, "text"):
+                    bot_response = first_part.text
+                else:
+                    bot_response = str(first_part)
+        elif hasattr(chunk, "text"):
+            bot_response = chunk.text
+        elif hasattr(chunk, "message"):
+            bot_response = chunk.message
+        elif isinstance(chunk, dict):
+            bot_response = chunk.get("content") or chunk.get("text") or chunk.get("message") or chunk.get("response", "")
+        elif isinstance(chunk, str):
+            bot_response = chunk
+    
+    if not bot_response and response_chunks:
+        last_chunk = response_chunks[-1]
+        if hasattr(last_chunk, "parts") and getattr(last_chunk, "parts"):
+            first_part = last_chunk.parts[0]
+            if hasattr(first_part, "text") and first_part.text:
+                bot_response = first_part.text
+        if not bot_response:
+            bot_response = str(last_chunk)
+    
+    if not bot_response:
+        bot_response = "Desculpe, não consegui processar sua mensagem."
+        api_log.warning("Resposta vazia do agente; usando fallback")
+    
+    state.add_message("assistant", bot_response)
+    
+    tickets_after_ids = set(ticket_api_client.local_cache.keys())
+    new_ticket_ids = list(tickets_after_ids - tickets_before_ids)
+
+    tickets_response = []
+    for tid in new_ticket_ids:
+        ticket = ticket_api_client.local_cache.get(tid, {})
+        pending = ticket.get("status", "open") == "open"
+        tickets_response.append(
+            TicketResponse(
+                pending=pending,
+                title=ticket.get("description", ""),
+                description=ticket.get("description", ""),
+                groupCode=ticket.get("group_code", "") or "",
+                categoryCode=ticket.get("category_code", "") or "",
+                attachments=ticket.get("attachments") or [],
+            )
+        )
+    
+    return MessageResponse(
+        userId=user_id,
+        message=bot_response,
+        tickets=tickets_response,
+    )
+
+
+def _load_attachments(paths: Optional[list]) -> list:
+    """Carrega anexos do S3 (texto). Retorna lista de strings."""
+    if not paths:
+        return []
+    texts = []
+    s3 = boto3.client(
+        "s3",
+        aws_access_key_id=Config.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=Config.AWS_SECRET_ACCESS_KEY,
+        region_name=Config.AWS_REGION,
+    )
+    for p in paths:
+        try:
+            bucket, key = _parse_s3_path(p)
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            body = obj["Body"].read()
+            try:
+                text = body.decode("utf-8")
+            except Exception:
+                text = body[:2048].hex()
+            texts.append(f"{p}: {text[:2000]}")
+        except (BotoCoreError, ClientError, ValueError) as e:
+            api_log.warning(f"Não foi possível carregar anexo {p}: {e}")
+            continue
+    return texts
+
+
+def _parse_s3_path(path: str) -> tuple:
+    """Converte s3://bucket/key ou bucket/key em (bucket, key)."""
+    if path.startswith("s3://"):
+        path = path[len("s3://") :]
+    if "/" not in path:
+        raise ValueError("Formato de caminho inválido para S3. Use s3://bucket/key")
+    bucket, key = path.split("/", 1)
+    return bucket, key
 
 
 if __name__ == "__main__":
